@@ -34,6 +34,16 @@
   #remote { max-width:100%; max-height:100%; background:#000; }
   #touch { position:absolute; inset:0; touch-action:none; }
   #hint { position:absolute; color:var(--dim); font-size:14px; pointer-events:none; }
+  /* pannello file */
+  #filePanel { position:absolute; inset:0; background:var(--bg); z-index:5; display:none; flex-direction:column; }
+  #filePanel.on { display:flex; }
+  #fpBar { display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--line); }
+  #fpList { flex:1; overflow:auto; }
+  .frow { display:flex; align-items:center; gap:12px; padding:12px 16px; border-bottom:1px solid var(--line); cursor:pointer; }
+  .frow:hover { background:var(--panel); }
+  .frow .ic { width:22px; text-align:center; }
+  .frow .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .frow .sz { color:var(--dim); font-size:12px; }
 </style>
 </head>
 <body>
@@ -66,12 +76,27 @@
   <div id="sesBar">
     <button id="back" class="ghost">← Indietro</button>
     <span class="name" id="sesName"></span>
+    <button id="btnFiles" class="ghost">📁 File</button>
     <span id="sesStatus" class="status">connessione…</span>
   </div>
   <div id="stage">
     <video id="remote" autoplay playsinline muted></video>
     <div id="touch"></div>
     <div id="hint">In attesa del video dal dispositivo…</div>
+  </div>
+
+  <!-- Pannello file -->
+  <div id="filePanel">
+    <div id="fpBar">
+      <button id="fpUp" class="ghost">⬆︎ Su</button>
+      <span id="fpPath" class="status" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap"></span>
+      <label class="ghost" style="cursor:pointer; padding:10px 14px; border:1px solid var(--line); border-radius:8px">
+        ⬆ Carica<input id="fpUpload" type="file" style="display:none">
+      </label>
+      <button id="fpClose" class="ghost">✕</button>
+    </div>
+    <div id="fpList"></div>
+    <div id="fpStatus" class="status" style="padding:8px 14px"></div>
   </div>
 </section>
 
@@ -148,7 +173,7 @@ function renderDevices(list){
 }
 
 // ───────────────────────────── SESSIONE WEBRTC ────────────────────
-let pc=null, dc=null, sig=null, sessionId=null, current=null;
+let pc=null, dc=null, dcFiles=null, sig=null, sessionId=null, current=null;
 
 async function startSession(d){
   current = d; sessionId = crypto.randomUUID();
@@ -164,6 +189,10 @@ async function startSession(d){
   // canale per i comandi (tap/swipe) verso il tablet
   dc = pc.createDataChannel('control');
   dc.onopen = () => $('#sesStatus').textContent = 'connesso';
+  // canale per il trasferimento file
+  dcFiles = pc.createDataChannel('files');
+  dcFiles.binaryType = 'arraybuffer';
+  dcFiles.onmessage = onFilesMessage;
 
   pc.ontrack = (ev) => {
     $('#remote').srcObject = ev.streams[0];
@@ -201,8 +230,9 @@ async function sendSignal(type, payload){
 function endSession(){
   try{ if(dc&&dc.readyState==='open') { sendSignal('bye', {}); } }catch(e){}
   if(sig) sb.removeChannel(sig); sig=null;
-  if(pc) pc.close(); pc=null; dc=null;
+  if(pc) pc.close(); pc=null; dc=null; dcFiles=null;
   $('#remote').srcObject=null;
+  $('#filePanel').classList.remove('on');
   document.getElementById('session').classList.remove('on');
 }
 $('#back').onclick = endSession;
@@ -222,6 +252,73 @@ touch.addEventListener('pointerup', e=>{
   else sendCmd({ t:'tap', x:p.x, y:p.y });
   down=null;
 });
+
+// ───────────────────────────── FILE ─────────────────────────────
+let curPath = '', upPath = '', incoming = null;
+
+function fpSend(o){ if(dcFiles && dcFiles.readyState==='open') dcFiles.send(JSON.stringify(o)); }
+function fpStatus(s){ $('#fpStatus').textContent = s || ''; }
+
+$('#btnFiles').onclick = () => {
+  if(!dcFiles || dcFiles.readyState!=='open'){ fpStatus('canale file non pronto'); }
+  $('#filePanel').classList.add('on');
+  fpSend({ op:'ls', path:'' });          // root = memoria del dispositivo
+  fpStatus('caricamento…');
+};
+$('#fpClose').onclick = () => $('#filePanel').classList.remove('on');
+$('#fpUp').onclick = () => { if(upPath!==undefined) fpSend({ op:'ls', path:upPath }); };
+
+function onFilesMessage(e){
+  if(typeof e.data !== 'string'){            // chunk binario di un download
+    if(incoming) incoming.chunks.push(e.data);
+    return;
+  }
+  const m = JSON.parse(e.data);
+  if(m.op==='ls_res'){ curPath=m.path; upPath=m.up; renderFiles(m); fpStatus(''); }
+  else if(m.op==='err'){ fpStatus(m.msg); }
+  else if(m.op==='get_begin'){ incoming={ name:m.name, size:m.size, chunks:[] }; fpStatus('scarico '+m.name+'…'); }
+  else if(m.op==='get_end'){
+    const blob = new Blob(incoming.chunks);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = incoming.name; a.click();
+    URL.revokeObjectURL(a.href); fpStatus('scaricato '+incoming.name); incoming=null;
+  }
+  else if(m.op==='put_ok'){ fpStatus('caricato ✓'); fpSend({ op:'ls', path:curPath }); }
+}
+
+function human(n){ if(n<1024) return n+' B'; if(n<1048576) return (n/1024).toFixed(0)+' KB'; return (n/1048576).toFixed(1)+' MB'; }
+
+function renderFiles(m){
+  $('#fpPath').textContent = m.path;
+  const box = $('#fpList'); box.innerHTML='';
+  (m.entries||[]).forEach(en => {
+    const row = document.createElement('div'); row.className='frow';
+    row.innerHTML = `<span class="ic">${en.d?'📁':'📄'}</span>
+      <span class="nm">${en.n}</span>
+      <span class="sz">${en.d?'':human(en.s)}</span>`;
+    const full = m.path.replace(/\/$/,'') + '/' + en.n;
+    row.onclick = () => {
+      if(en.d) fpSend({ op:'ls', path:full });
+      else { fpSend({ op:'get', path:full }); }
+    };
+    box.appendChild(row);
+  });
+}
+
+// upload: invia il file scelto nella cartella corrente
+$('#fpUpload').onchange = async (e) => {
+  const file = e.target.files[0]; if(!file) return;
+  fpStatus('carico '+file.name+'…');
+  fpSend({ op:'put_begin', path:curPath, name:file.name, size:file.size });
+  const CHUNK = 16*1024;
+  const buf = await file.arrayBuffer();
+  for(let off=0; off<buf.byteLength; off+=CHUNK){
+    while(dcFiles.bufferedAmount > 1_000_000) await new Promise(r=>setTimeout(r,15));
+    dcFiles.send(buf.slice(off, off+CHUNK));
+  }
+  fpSend({ op:'put_end' });
+  e.target.value='';
+};
 
 boot();
 </script>
