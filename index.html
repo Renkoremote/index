@@ -324,7 +324,14 @@ async function renderPc(){
       'Usa Chrome/Edge su PC. In alternativa i download finiscono nella cartella Download.</div>';
     return;
   }
-  if(!pcDirHandle){ $('#pcPath').textContent='nessuna cartella aperta'; return; }
+  if(!pcDirHandle){
+    $('#pcPath').textContent='nessuna cartella aperta';
+    box.innerHTML = '<div class="status" style="padding:12px; line-height:1.5">'+
+      'Premi <b>Scegli cartella</b> e seleziona una <b>cartella normale</b>.<br>'+
+      'Chrome blocca Desktop, Download e Documenti ("file di sistema"): '+
+      'crea una sottocartella (es. <b>Desktop\\RenkoTransfer</b>) e scegli quella.</div>';
+    return;
+  }
   $('#pcPath').textContent = pcStack.map(h=>h.name).join('/') || pcDirHandle.name;
   // riga "su" se dentro una sottocartella
   if(pcStack.length){
